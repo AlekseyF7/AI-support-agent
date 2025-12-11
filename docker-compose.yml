@@ -1,0 +1,196 @@
+version: '3.8'
+
+services:
+  # PostgreSQL для тикетов и логов
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-support-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-support_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-support_password}
+      POSTGRES_DB: ${POSTGRES_DB:-support_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-support_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - support_network
+
+  # Qdrant для векторного поиска
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    container_name: ai-support-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - support_network
+
+  # Elasticsearch для ELK Stack
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: ai-support-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - support_network
+
+  # Logstash для обработки логов
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: ai-support-logstash
+    volumes:
+      - ./config/logstash/pipeline:/usr/share/logstash/pipeline
+      - ./config/logstash/config:/usr/share/logstash/config
+    ports:
+      - "5044:5044"
+      - "9600:9600"
+    environment:
+      - "LS_JAVA_OPTS=-Xmx256m -Xms256m"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - support_network
+
+  # Kibana для визуализации логов
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: ai-support-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - support_network
+
+  # Prometheus для метрик
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: ai-support-prometheus
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - support_network
+
+  # Grafana для визуализации метрик
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: ai-support-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - support_network
+
+  # FastAPI бэкенд
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: ai-support-api
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-support_user}:${POSTGRES_PASSWORD:-support_password}@postgres:5432/${POSTGRES_DB:-support_db}
+      - QDRANT_URL=http://qdrant:6333
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - LOGSTASH_HOST=logstash
+      - LOGSTASH_PORT=5044
+      - PROMETHEUS_PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - support_network
+    restart: unless-stopped
+
+  # Telegram бот
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: ai-support-bot
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-support_user}:${POSTGRES_PASSWORD:-support_password}@postgres:5432/${POSTGRES_DB:-support_db}
+      - QDRANT_URL=http://qdrant:6333
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LOGSTASH_HOST=logstash
+      - LOGSTASH_PORT=5044
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - qdrant
+      - api
+    networks:
+      - support_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  elasticsearch_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  support_network:
+    driver: bridge
