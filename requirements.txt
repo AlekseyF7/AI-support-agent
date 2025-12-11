@@ -1,0 +1,23 @@
+python-telegram-bot>=22.0
+langchain
+langchain-community
+langchain-openai
+langchain-chroma
+chromadb
+openai
+python-dotenv
+pydantic
+tiktoken
+numpy
+# PB6: База данных для тикетов
+# SQLite встроен в Python, дополнительных зависимостей не требуется
+
+# Опциональные зависимости для альтернативных LLM провайдеров
+# Раскомментируйте нужные:
+# langchain-groq  # Для Groq API
+# huggingface_hub  # Для Hugging Face
+# ollama  # Для локальных моделей Ollama (устанавливается отдельно)
+
+# Примечание: chromadb может иметь проблемы совместимости с Python 3.14+
+# Если возникают проблемы, попробуйте использовать Python 3.11 или 3.12
+
