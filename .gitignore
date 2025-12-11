@@ -17,14 +17,35 @@ ENV/
 
 # Database
 *.db
+*.sqlite
 chroma_db/
+backups/
+*.sql.gz
 
 # Logs
 *.log
+logs/
 
 # Environment
 .env
 .env.local
+
+# Docker
+.docker/
+
+# Alembic
+alembic/versions/*.pyc
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Build
+dist/
+build/
+*.egg-info/
 
 # OS
 .DS_Store
