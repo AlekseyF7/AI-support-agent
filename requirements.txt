@@ -1,0 +1,37 @@
+python-telegram-bot>=22.0
+langchain
+langchain-community
+langchain-openai
+langchain-chroma
+chromadb
+openai
+python-dotenv
+pydantic
+tiktoken
+numpy
+
+# База данных
+# SQLite встроен в Python, дополнительных зависимостей не требуется
+psycopg2-binary>=2.9.0  # Для PostgreSQL (опционально)
+
+# Кэширование
+redis>=5.0.0  # Для Redis кэширования (опционально)
+
+# Тестирование
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+
+# HTTP клиент для прокси
+httpx>=0.24.0
+
+# Опциональные зависимости для альтернативных LLM провайдеров
+# Раскомментируйте нужные:
+# langchain-groq  # Для Groq API
+# huggingface_hub  # Для Hugging Face
+# ollama  # Для локальных моделей Ollama (устанавливается отдельно)
+
+# Примечание: chromadb может иметь проблемы совместимости с Python 3.14+
+# Если возникают проблемы, попробуйте использовать Python 3.11 или 3.12
+
