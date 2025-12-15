@@ -1,26 +1,36 @@
 @echo off
-chcp 65001 >nul
-echo Starting Telegram Support Bot...
+REM Устанавливаем кодовую страницу UTF-8
+chcp 65001
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
+echo ====================================
+echo Запуск Telegram бота поддержки
+echo ====================================
 echo.
 
-REM Проверка виртуального окружения
-if not exist "venv\Scripts\activate.bat" (
-    echo Error: Virtual environment not found!
-    echo Please run setup_venv.bat first or create venv manually.
+REM Переход в директорию скрипта
+pushd "%~dp0"
+
+REM Проверка наличия виртуального окружения
+if not exist "myenv312\Scripts\python.exe" (
+    echo ОШИБКА: Виртуальное окружение myenv312 не найдено!
+    echo.
+    echo Создайте виртуальное окружение:
+    echo   python -m venv myenv312
+    echo.
+    echo Или используйте существующее окружение.
+    popd
     pause
     exit /b 1
 )
 
-REM Активация виртуального окружения
-call venv\Scripts\activate.bat
-
-echo [INFO] If you see "Conflict" error, stop the bot first with: stop_bot.bat
+echo Используется виртуальное окружение: myenv312
 echo.
-python main.py
 
-if errorlevel 1 (
-    echo.
-    echo Bot stopped with error!
-    pause
-)
+REM Активация окружения и запуск бота
+call myenv312\Scripts\activate.bat
+python bot.py
+
+popd
+pause
 

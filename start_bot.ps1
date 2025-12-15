@@ -1,25 +1,30 @@
-# PowerShell script to start bot
-# Set console output encoding to UTF-8
+# Скрипт запуска бота
+# Настройка кодировки
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
 
-Write-Host "Starting Telegram Support Bot..." -ForegroundColor Green
+Write-Host "====================================" -ForegroundColor Cyan
+Write-Host "Запуск Telegram бота поддержки" -ForegroundColor Cyan
+Write-Host "====================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Check virtual environment
-if (-not (Test-Path "venv\Scripts\python.exe")) {
-    Write-Host "Error: Virtual environment not found!" -ForegroundColor Red
-    Write-Host "Please run setup_venv.bat first or create venv manually." -ForegroundColor Yellow
+# Переход в директорию скрипта
+Set-Location $PSScriptRoot
+
+# Проверка наличия виртуального окружения
+if (-not (Test-Path "myenv312\Scripts\python.exe")) {
+    Write-Host "ОШИБКА: Виртуальное окружение myenv312 не найдено!" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Создайте виртуальное окружение:" -ForegroundColor Yellow
+    Write-Host "  python -m venv myenv312"
+    Write-Host ""
     exit 1
 }
 
-# Activate virtual environment and start bot
-& "venv\Scripts\python.exe" main.py
+Write-Host "Используется виртуальное окружение: myenv312" -ForegroundColor Green
+Write-Host ""
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "Bot stopped with error code: $LASTEXITCODE" -ForegroundColor Red
-    Write-Host "Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-}
+# Активация окружения и запуск бота
+& "myenv312\Scripts\python.exe" bot.py
 
