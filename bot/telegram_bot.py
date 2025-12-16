@@ -183,7 +183,7 @@ class SupportBot:
             is_relevant, reason = QuestionFilter.is_relevant(message_text)
             if not is_relevant:
                 rejection_msg = QuestionFilter.get_rejection_message()
-                await update.message.reply_text(rejection_msg)
+                await update.message.reply_text(rejection_msg, parse_mode=ParseMode.MARKDOWN_V2)
                 self._add_to_history(user.id, rejection_msg, is_bot=True)
                 logger.info(f"Вопрос отклонен фильтром: {reason}")
                 return
