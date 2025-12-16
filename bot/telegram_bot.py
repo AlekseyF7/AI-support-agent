@@ -1,11 +1,13 @@
 """
-Telegram бот для поддержки клиентов
+Telegram бот для поддержки клиентов банка
 """
 import os
 import logging
+import re
 from typing import Dict, List
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.constants import ParseMode
 from telegram.error import Conflict
 from dotenv import load_dotenv
 
@@ -64,6 +66,14 @@ class SupportBot:
             print("[WARNING] SUPPORT_CHAT_ID не настроен. Тикеты не будут отправляться специалистам.")
             print("[INFO] Добавьте SUPPORT_CHAT_ID в .env файл для отправки тикетов в группу.")
     
+    @staticmethod
+    def escape_md(text: str) -> str:
+        """Экранирует спецсимволы для MarkdownV2"""
+        if not isinstance(text, str):
+            text = str(text)
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+    
     def _register_handlers(self):
         """Регистрация обработчиков команд и сообщений"""
         # Команды
@@ -80,54 +90,51 @@ class SupportBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /start"""
         user = update.effective_user
-        welcome_message = f"""О, здравствуйте, {user.first_name}!
-
-Я — бот поддержки банка. Готов помочь вам с вопросами.
-
-Я могу:
-- ответить на вопросы про интернет‑банк и карты;
-- помочь восстановить доступ;
-- создать обращение для специалистов.
-
-Пожалуйста, опишите вашу проблему или задайте вопрос.
-
-Команды:
-/help - справка
-/clear - очистить историю диалога"""
+        name = self.escape_md(user.first_name)
+        welcome_message = (
+            f"О, здравствуйте, {name}!\n\n"
+            "Я — *бот поддержки банка*. Готов помочь вам с вопросами.\n\n"
+            "*Я могу:*\n"
+            "• ответить на вопросы про интернет‑банк и карты;\n"
+            "• помочь восстановить доступ;\n"
+            "• создать обращение для специалистов.\n\n"
+            "Пожалуйста, опишите вашу проблему или задайте вопрос.\n\n"
+            "*Команды:*\n"
+            "/help — справка\n"
+            "/clear — очистить историю диалога"
+        )
         
-        await update.message.reply_text(welcome_message)
+        await update.message.reply_text(welcome_message, parse_mode=ParseMode.MARKDOWN_V2)
         self.conversation_history[user.id] = []
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /help"""
-        help_message = """Справка по использованию бота
-
-Как работает бот:
-1. Вы описываете проблему или задаете вопрос
-2. Бот ищет ответ в базе знаний
-3. Если ответ найден - бот отвечает сразу
-4. Если нужна помощь специалиста - создается обращение
-5. Специалист получает ваш вопрос и отвечает
-
-Примеры вопросов:
-- "Как изменить пароль в интернет-банке?"
-- "Не могу войти в мобильное приложение"
-- "Как заблокировать карту?"
-- "Не приходит SMS с кодом"
-- "Как перевести деньги на другой счёт?"
-- "Почему не отображается баланс?"
-
-Команды:
-/start - начать работу
-/clear - очистить историю диалога"""
-        
-        await update.message.reply_text(help_message)
+        help_message = (
+            "*Справка по использованию бота*\n\n"
+            "Как работает бот:\n"
+            "1\\. Вы описываете проблему или задаете вопрос\n"
+            "2\\. Бот ищет ответ в базе знаний\n"
+            "3\\. Если ответ найден — бот отвечает сразу\n"
+            "4\\. Если нужна помощь специалиста — создаётся обращение\n"
+            "5\\. Специалист получает ваш вопрос и отвечает\n\n"
+            "*Примеры вопросов:*\n"
+            "• _Как изменить пароль в интернет\\-банке?_\n"
+            "• _Не могу войти в мобильное приложение_\n"
+            "• _Как заблокировать карту?_\n"
+            "• _Не приходит SMS с кодом_\n"
+            "• _Как перевести деньги на другой счёт?_\n"
+            "• _Почему не отображается баланс?_\n\n"
+            "*Команды:*\n"
+            "/start — начать работу\n"
+            "/clear — очистить историю диалога"
+        )
+        await update.message.reply_text(help_message, parse_mode=ParseMode.MARKDOWN_V2)
     
     async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Очистка истории диалога"""
         user = update.effective_user
         self.conversation_history[user.id] = []
-        await update.message.reply_text("История диалога очищена")
+        await update.message.reply_text("*История диалога очищена*", parse_mode=ParseMode.MARKDOWN_V2)
     
     def _add_to_history(self, user_id: int, message: str, is_bot: bool = False):
         """Добавление сообщения в историю"""
@@ -211,11 +218,12 @@ class SupportBot:
             
             if has_good_answer and is_faq and low_priority:
                 # Простой FAQ вопрос - отвечаем без создания тикета
-                response = f"💡 {answer}"
+                escaped_answer = self.escape_md(answer)
+                response = f"💡 {escaped_answer}"
                 if rag_result.get("sources"):
-                    response += f"\n\n📚 Источники: {len(rag_result['sources'])} документов"
+                    response += f"\n\n📚 *Источники:* {len(rag_result['sources'])} документов"
                 
-                await update.message.reply_text(response)
+                await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN_V2)
                 self._add_to_history(user.id, response, is_bot=True)
             
             else:
@@ -246,28 +254,34 @@ class SupportBot:
                 response_parts = []
                 
                 if answer and len(answer.strip()) > 5:
-                    response_parts.append(f"💡 Ответ из базы знаний:\n{answer}")
+                    escaped_answer = self.escape_md(answer)
+                    response_parts.append(f"💡 *Ответ из базы знаний:*\n{escaped_answer}")
                     if rag_result.get("sources"):
-                        response_parts.append(f"📚 Источники: {len(rag_result['sources'])} документов")
+                        response_parts.append(f"📚 *Источники:* {len(rag_result['sources'])} документов")
                     response_parts.append("")
                 
-                response_parts.append("⚠️ Ваше обращение зарегистрировано и передано специалистам.")
-                response_parts.append(self.escalation.format_ticket_message(ticket))
+                response_parts.append("⚠️ *Ваше обращение зарегистрировано и передано специалистам.*")
+                ticket_msg = self.escalation.format_ticket_message(ticket)
+                response_parts.append(self.escape_md(ticket_msg))
                 
                 if classification.reasoning:
-                    response_parts.append(f"\n📊 Обоснование: {classification.reasoning}")
+                    escaped_reason = self.escape_md(classification.reasoning)
+                    response_parts.append(f"\n📊 *Обоснование:* {escaped_reason}")
                 
                 response = "\n".join(response_parts)
                 
-                await update.message.reply_text(response)
+                await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN_V2)
                 self._add_to_history(user.id, response, is_bot=True)
         
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
             import traceback
             traceback.print_exc()
-            error_message = "Извините, произошла ошибка при обработке вашего запроса. Попробуйте позже или обратитесь в поддержку напрямую."
-            await update.message.reply_text(error_message)
+            error_message = (
+                "⚠️ *Извините, произошла ошибка при обработке вашего запроса.*\n"
+                "Попробуйте позже или обратитесь в поддержку напрямую."
+            )
+            await update.message.reply_text(error_message, parse_mode=ParseMode.MARKDOWN_V2)
     
     def run(self):
         """Запуск бота"""
@@ -293,7 +307,8 @@ class SupportBot:
                 user = update.effective_user
                 await context.bot.send_message(
                     chat_id=user.id,
-                    text="Извините, произошла ошибка. Попробуйте позже."
+                    text="⚠️ *Извините, произошла ошибка.* Попробуйте позже.",
+                    parse_mode=ParseMode.MARKDOWN_V2
                 )
             except Exception:
                 pass
