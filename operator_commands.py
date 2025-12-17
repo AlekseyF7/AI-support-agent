@@ -1,10 +1,13 @@
 """Команды для операторов поддержки"""
+import logging
 from models import Ticket, TicketStatus, SupportLine, TicketResponse, SessionLocal
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from telegram import Update
 from telegram.ext import ContextTypes
+
+logger = logging.getLogger(__name__)
 
 
 def is_operator(user_id: int, operator_ids: str) -> bool:
@@ -172,7 +175,7 @@ async def cmd_take(update: Update, context: ContextTypes.DEFAULT_TYPE, operator_
         ticket.operator_id = user_id
         ticket.operator_name = user_name
         ticket.status = TicketStatus.IN_PROGRESS
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = datetime.now(timezone.utc)
         
         db.commit()
         
@@ -236,7 +239,7 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, operator
         if ticket.status == TicketStatus.OPEN:
             ticket.status = TicketStatus.IN_PROGRESS
         
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = datetime.now(timezone.utc)
         
         db.commit()
         
@@ -287,8 +290,8 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE, operator
             return
         
         ticket.status = TicketStatus.RESOLVED
-        ticket.resolved_at = datetime.utcnow()
-        ticket.updated_at = datetime.utcnow()
+        ticket.resolved_at = datetime.now(timezone.utc)
+        ticket.updated_at = datetime.now(timezone.utc)
         
         db.commit()
         

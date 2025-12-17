@@ -11,12 +11,17 @@ GIGACHAT_SCOPE=GIGACHAT_API_PERS
 # Получите токен у @BotFather в Telegram
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
+# Sber Salute Speech (SmartSpeech) для распознавания речи
+# Получите Client ID / Client Secret на https://developers.sber.ru/
+SALUTE_SPEECH_CLIENT_ID=your_salute_speech_client_id_here
+SALUTE_SPEECH_CLIENT_SECRET=your_salute_speech_client_secret_here
+
 # Database
 DATABASE_URL=sqlite:///./support.db
 
 # RAG Settings
 CHROMA_DB_PATH=./chroma_db
-EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL=paraphrase-multilingual-mpnet-base-v2
 """
 
 if __name__ == "__main__":
@@ -35,4 +40,5 @@ if __name__ == "__main__":
     print("1. GIGACHAT_CLIENT_ID - получите на https://developers.sber.ru/gigachat")
     print("2. GIGACHAT_CLIENT_SECRET - получите на https://developers.sber.ru/gigachat")
     print("3. TELEGRAM_BOT_TOKEN - получите у @BotFather в Telegram")
+    print("4. SALUTE_SPEECH_CLIENT_ID / SALUTE_SPEECH_CLIENT_SECRET - получите на https://developers.sber.ru/ для Salute Speech")
 

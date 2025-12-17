@@ -1,11 +1,13 @@
 """Клиент для работы с Giga Chat API"""
 import os
+import base64
 import logging
+import json
+from typing import Optional, List, Dict
+
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 from config import settings
-import json
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -14,30 +16,35 @@ class GigaChatClient:
     """Клиент для взаимодействия с Giga Chat API"""
     
     def __init__(self):
-        # Библиотека gigachat ожидает credentials как base64(client_id:client_secret)
-        # credentials должен быть в формате base64, библиотека добавит "Bearer " префикс
-        import base64
-        
+        """Инициализация клиента GigaChat с учетными данными из настроек."""
         try:
-            # Приоритет: если есть готовый Authorization Key, используем его
+            credentials = None
+            
+            # Приоритет 1: если есть готовый Authorization Key
             if settings.GIGACHAT_AUTHORIZATION_KEY and settings.GIGACHAT_AUTHORIZATION_KEY.strip():
                 credentials = settings.GIGACHAT_AUTHORIZATION_KEY.strip()
-                logger.info("Используется готовый Authorization Key")
-            elif settings.GIGACHAT_CLIENT_SECRET:
-                # Формируем base64(client_id:client_secret)
-                # Если client_id не указан, используем только client_secret
-                if settings.GIGACHAT_CLIENT_ID and settings.GIGACHAT_CLIENT_ID.strip() and settings.GIGACHAT_CLIENT_ID != "your_client_id_here":
-                    creds_string = f"{settings.GIGACHAT_CLIENT_ID}:{settings.GIGACHAT_CLIENT_SECRET}"
-                    logger.info(f"Используется client_id: {settings.GIGACHAT_CLIENT_ID[:10]}...")
-                else:
-                    # Если client_id не указан, используем только client_secret
-                    creds_string = f":{settings.GIGACHAT_CLIENT_SECRET}"  # Пустой client_id
-                    logger.info("Используется только client_secret (без client_id)")
+                logger.info("Используется GIGACHAT_AUTHORIZATION_KEY")
+            
+            # Приоритет 2: Client Secret (проверяем, является ли он уже base64)
+            elif settings.GIGACHAT_CLIENT_SECRET and settings.GIGACHAT_CLIENT_SECRET.strip():
+                secret = settings.GIGACHAT_CLIENT_SECRET.strip()
                 
-                # Кодируем в base64
-                credentials = base64.b64encode(creds_string.encode('utf-8')).decode('utf-8')
+                # Если secret выглядит как base64 (содержит = в конце или длинный без спецсимволов)
+                # то это уже готовый Authorization Key от Сбера
+                if '==' in secret or (len(secret) > 50 and ':' not in secret):
+                    credentials = secret
+                    logger.info("GIGACHAT_CLIENT_SECRET используется как готовый Authorization Key")
+                else:
+                    # Формируем base64(client_id:client_secret)
+                    client_id = settings.GIGACHAT_CLIENT_ID.strip() if settings.GIGACHAT_CLIENT_ID else ""
+                    if client_id and client_id != "your_client_id_here":
+                        creds_string = f"{client_id}:{secret}"
+                    else:
+                        creds_string = f":{secret}"
+                    credentials = base64.b64encode(creds_string.encode('utf-8')).decode('utf-8')
+                    logger.info("Используется закодированный client_id:client_secret")
             else:
-                raise ValueError("Необходимо указать либо GIGACHAT_AUTHORIZATION_KEY, либо GIGACHAT_CLIENT_SECRET в .env файле")
+                raise ValueError("Необходимо указать GIGACHAT_AUTHORIZATION_KEY или GIGACHAT_CLIENT_SECRET в .env файле")
             
             self.client = GigaChat(
                 credentials=credentials,
@@ -48,7 +55,7 @@ class GigaChatClient:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Ошибка инициализации GigaChat: {error_msg}", exc_info=True)
-            raise Exception(f"Не удалось инициализировать GigaChat клиент. Проверьте корректность учетных данных в .env файле. Ошибка: {error_msg}")
+            raise Exception(f"Не удалось инициализировать GigaChat клиент. Ошибка: {error_msg}")
     
     def generate_response(self, messages: list, temperature: float = 0.7) -> str:
         """
@@ -88,7 +95,8 @@ class GigaChatClient:
             
             return response.choices[0].message.content
         except Exception as e:
-            return f"Ошибка при генерации ответа: {str(e)}"
+            logger.error(f"Ошибка при генерации ответа GigaChat: {e}", exc_info=True)
+            return f"Извините, произошла ошибка при генерации ответа. Пожалуйста, попробуйте позже."
     
     def classify_request(self, user_message: str, conversation_history: list = None) -> dict:
         """

@@ -35,7 +35,24 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
+# Отключаем телеметрию chromadb ДО импорта rag_system
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY_DISABLED"] = "1"
+os.environ["ALLOW_RESET"] = "TRUE"
+
 import logging
+import asyncio
+import tempfile
+from pathlib import Path
+
+# Подавляем логи телеметрии chromadb
+logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb.telemetry").disabled = True
+logging.getLogger("chromadb.telemetry.product").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb.telemetry.product").disabled = True
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb.telemetry.product.posthog").disabled = True
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from config import get_settings
@@ -63,6 +80,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from PIL import Image, ImageEnhance, ImageFilter
+import pytesseract
+import requests
+from salute_speech_client import SaluteSpeechClient
+
 # Инициализация компонентов
 logger.info("Инициализация базы данных...")
 init_db()
@@ -72,14 +94,37 @@ logger.info("Инициализация GigaChat клиента...")
 gigachat = GigaChatClient()
 
 logger.info("Инициализация RAG системы...")
-rag = RAGSystem()
-logger.info(f"RAG система: ChromaDB доступен = {rag.chromadb_available}")
+try:
+    rag = RAGSystem()
+    logger.info(f"RAG система: ChromaDB доступен = {rag.chromadb_available}")
+except Exception as e:
+    logger.error(f"Ошибка инициализации RAG системы: {e}", exc_info=True)
+    # Создаем заглушку, чтобы бот мог работать без RAG
+    class SimpleRAGSystem:
+        def __init__(self):
+            self.chromadb_available = False
+            self.knowledge_base = {}
+        def get_context_for_query(self, query, max_results=3):
+            return "Релевантная информация не найдена."
+    rag = SimpleRAGSystem()
+    logger.warning("RAG система работает в упрощенном режиме")
 
 logger.info("Инициализация классификатора запросов...")
-classifier = RequestClassifier()
+classifier = RequestClassifier(gigachat_client=gigachat)
 
 logger.info("Инициализация системы эскалации...")
 escalation_system = EscalationSystem()
+
+logger.info("Инициализация клиента Salute Speech для распознавания речи...")
+try:
+    salute_speech_client = SaluteSpeechClient(
+        getattr(settings, "SALUTE_SPEECH_CLIENT_ID", ""),
+        getattr(settings, "SALUTE_SPEECH_CLIENT_SECRET", ""),
+    )
+    logger.info("Клиент Salute Speech инициализирован")
+except Exception as e:
+    logger.warning(f"Не удалось инициализировать Salute Speech клиент: {e}. Голосовое распознавание будет недоступно.")
+    salute_speech_client = None
 
 logger.info("Все компоненты успешно инициализированы")
 
@@ -194,10 +239,9 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("История разговора очищена. Можем начать заново!")
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений"""
+async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
+    """Общий обработчик логики ответа по тексту (из чата, голоса или изображения)"""
     user = update.effective_user
-    user_message = update.message.text
     user_id = user.id
     
     # Добавляем сообщение пользователя в историю
@@ -346,9 +390,175 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений"""
+    user_message = update.message.text
+    await process_user_text(update, context, user_message)
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик голосовых сообщений"""
+    if salute_speech_client is None:
+        await update.message.reply_text(
+            "❌ Голосовое распознавание недоступно: не настроены учетные данные Salute Speech. "
+            "Пожалуйста, отправьте вопрос текстом."
+        )
+        return
+    
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        await update.message.reply_text("Не удалось получить голосовое сообщение.")
+        return
+
+    # Показываем статус обработки
+    status_msg = await update.message.reply_text("🎤 Распознаю речь...")
+
+    try:
+        file = await context.bot.get_file(voice.file_id)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ogg_path = Path(tmpdir) / "voice.ogg"
+            await file.download_to_drive(str(ogg_path))
+
+            # Проверяем размер файла (Salute Speech имеет ограничения)
+            file_size = ogg_path.stat().st_size
+            if file_size > 2 * 1024 * 1024:  # 2 MB
+                await status_msg.edit_text(
+                    "❌ Файл слишком большой (максимум 2 МБ). "
+                    "Попробуйте записать более короткое сообщение."
+                )
+                return
+
+            # Распознаём речь через Sber Salute Speech (SmartSpeech REST API)
+            loop = asyncio.get_running_loop()
+            text = await loop.run_in_executor(
+                None, lambda: salute_speech_client.recognize_file(str(ogg_path), content_type="audio/ogg")
+            )
+
+            if not text or len(text.strip()) < 3:
+                await status_msg.edit_text(
+                    "❌ Не удалось распознать речь. "
+                    "Попробуйте говорить громче, чётче и ближе к микрофону."
+                )
+                return
+
+            # Убираем сообщение о распознавании и сразу обрабатываем текст
+            await status_msg.delete()
+            await process_user_text(update, context, text)
+
+    except RuntimeError as e:
+        # Ошибка с credentials
+        logger.error(f"Ошибка Salute Speech (credentials): {e}")
+        await status_msg.edit_text(
+            "❌ Голосовое распознавание недоступно: не настроены учетные данные Salute Speech. "
+            "Обратитесь к администратору."
+        )
+    except (requests.exceptions.SSLError, requests.exceptions.HTTPError) as e:
+        logger.error(f"Ошибка соединения с Salute Speech: {e}", exc_info=True)
+        await status_msg.edit_text(
+            "❌ Ошибка при обращении к сервису распознавания речи. "
+            "Попробуйте позже или отправьте вопрос текстом."
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при обработке голосового сообщения: {e}", exc_info=True)
+        await status_msg.edit_text(
+            "❌ Не удалось обработать голосовое сообщение. "
+            "Попробуйте ещё раз или отправьте вопрос текстом."
+        )
+
+
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик изображений/скриншотов с распознаванием текста"""
+    message = update.message
+    photo = message.photo[-1] if message.photo else None
+    document = message.document if message.document and message.document.mime_type and message.document.mime_type.startswith("image/") else None
+
+    if not photo and not document:
+        await message.reply_text("Не удалось получить изображение. Попробуйте отправить скриншот как фото или картинку.")
+        return
+
+    # Показываем статус обработки
+    status_msg = await message.reply_text("🖼️ Распознаю текст на изображении...")
+
+    try:
+        file = await (context.bot.get_file(photo.file_id) if photo else context.bot.get_file(document.file_id))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            img_path = Path(tmpdir) / "screenshot.png"
+            await file.download_to_drive(str(img_path))
+
+            # Улучшенная обработка изображения для лучшего OCR
+            image = Image.open(img_path)
+            
+            # Конвертируем в RGB, если нужно
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Улучшаем качество изображения для OCR
+            # Увеличиваем контрастность
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.5)
+            
+            # Увеличиваем резкость
+            enhancer = ImageEnhance.Sharpness(image)
+            image = enhancer.enhance(2.0)
+            
+            # Применяем легкое размытие для уменьшения шума
+            image = image.filter(ImageFilter.MedianFilter(size=3))
+            
+            # Увеличиваем размер, если изображение маленькое (улучшает распознавание)
+            width, height = image.size
+            if width < 800 or height < 600:
+                scale = max(800 / width, 600 / height)
+                new_size = (int(width * scale), int(height * scale))
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Распознаём текст с улучшенными параметрами
+            ocr_config = r'--oem 3 --psm 6 -l rus+eng'
+            ocr_text = pytesseract.image_to_string(image, lang="rus+eng", config=ocr_config).strip()
+            
+            # Очищаем результат от лишних пробелов и переносов
+            lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
+            ocr_text = ' '.join(lines)
+
+            if not ocr_text or len(ocr_text.strip()) < 3:
+                await status_msg.edit_text(
+                    "❌ Не удалось распознать текст на изображении. "
+                    "Убедитесь, что текст достаточно крупный и четкий."
+                )
+                return
+
+            # Убираем сообщение о распознавании и сразу обрабатываем текст
+            # НЕ показываем распознанный текст пользователю, только обрабатываем
+            await status_msg.delete()
+            await process_user_text(update, context, ocr_text)
+
+    except pytesseract.TesseractNotFoundError:
+        await status_msg.edit_text(
+            "❌ Tesseract OCR не установлен. "
+            "Обратитесь к администратору для настройки системы."
+        )
+        logger.error("Tesseract OCR не найден в системе")
+    except Exception as e:
+        logger.error(f"Ошибка при обработке изображения: {e}", exc_info=True)
+        await status_msg.edit_text(
+            "❌ Не удалось обработать изображение. "
+            "Попробуйте еще раз или опишите проблему текстом."
+        )
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
-    logger.error(f"Update {update} caused error {context.error}")
+    logger.error(f"Update {update} caused error {context.error}", exc_info=context.error)
+    
+    # Пытаемся отправить пользователю сообщение об ошибке
+    try:
+        if update and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже или используйте команду /help."
+            )
+    except Exception as e:
+        logger.error(f"Не удалось отправить сообщение об ошибке пользователю: {e}")
 
 
 def main():
@@ -388,8 +598,11 @@ def main():
     application.add_handler(CommandHandler("close", close_wrapper))
     application.add_handler(CommandHandler("stats", stats_wrapper))
     
-    # Обработчик обычных сообщений (должен быть последним)
+    # Обработчик обычных сообщений (должен быть последним среди текстовых)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Обработчики голосовых сообщений и изображений
+    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
     
     # Обработчик ошибок
     application.add_error_handler(error_handler)

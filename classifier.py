@@ -1,14 +1,24 @@
 """Классификатор обращений"""
 from gigachat_client import GigaChatClient
 from models import Category, Criticality, SupportLine
-from typing import Dict
+from typing import Dict, Optional
 
 
 class RequestClassifier:
     """Классификатор обращений по тематике и критичности"""
     
-    def __init__(self):
-        self.gigachat_client = GigaChatClient()
+    def __init__(self, gigachat_client: Optional[GigaChatClient] = None):
+        """
+        Инициализация классификатора.
+        
+        Args:
+            gigachat_client: Существующий экземпляр GigaChatClient.
+                           Если не передан, создается новый.
+        """
+        if gigachat_client is not None:
+            self.gigachat_client = gigachat_client
+        else:
+            self.gigachat_client = GigaChatClient()
     
     def classify(self, user_message: str, conversation_history: list = None) -> Dict:
         """

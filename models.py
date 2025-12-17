@@ -2,7 +2,7 @@
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Enum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
+from datetime import datetime, timezone
 import enum
 from config import settings
 
@@ -64,8 +64,8 @@ class Ticket(Base):
     operator_name = Column(String(255), nullable=True)
     
     # Метаданные
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     resolved_at = Column(DateTime, nullable=True)
     
     # История взаимодействий
@@ -84,7 +84,7 @@ class TicketResponse(Base):
     operator_id = Column(Integer, nullable=False)  # Telegram ID оператора
     operator_name = Column(String(255), nullable=True)
     message = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     def __repr__(self):
         return f"<TicketResponse(id={self.id}, ticket_id={self.ticket_id}, operator_id={self.operator_id})>"

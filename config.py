@@ -33,12 +33,17 @@ class Settings(BaseSettings):
     # Telegram Bot
     TELEGRAM_BOT_TOKEN: str = ""
     
+    # Sber Salute Speech (SmartSpeech) for STT
+    SALUTE_SPEECH_CLIENT_ID: str = ""
+    SALUTE_SPEECH_CLIENT_SECRET: str = ""
+    
     # Database
     DATABASE_URL: str = "sqlite:///./support.db"
     
     # RAG Settings
     CHROMA_DB_PATH: str = "./chroma_db"
-    EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    # Используем более надежную модель по умолчанию
+    EMBEDDING_MODEL: str = "paraphrase-multilingual-mpnet-base-v2"
     
     # Operator Settings
     OPERATOR_IDS: str = ""  # Список ID операторов через запятую (например: "123456789,987654321")

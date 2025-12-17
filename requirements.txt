@@ -1,11 +1,27 @@
+# Telegram Bot
 python-telegram-bot==20.7
+
+# GigaChat API
 gigachat==0.1.25
+
+# Database
 sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
+
+# Configuration
 python-dotenv==1.0.0
 pydantic==2.5.3
 pydantic-settings==2.1.0
+
+# RAG System
 chromadb==0.4.22
-sentence-transformers==2.2.2
-numpy==1.26.2
+sentence-transformers>=2.2.0,<3.0.0
+numpy>=1.25.2,<2.0.0
+onnxruntime==1.16.3
+
+# Image Processing
+Pillow>=10.0.0
+pytesseract>=0.3.10
+
+# HTTP Requests
+requests>=2.31.0
 

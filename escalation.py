@@ -1,15 +1,25 @@
 """Система маршрутизации и эскалации обращений"""
+import logging
 from models import Ticket, SupportLine, TicketStatus, Criticality, SessionLocal
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+
+logger = logging.getLogger(__name__)
 
 
 class EscalationSystem:
     """Система маршрутизации обращений по линиям поддержки"""
     
     def __init__(self):
-        self.db = SessionLocal()
+        self._db = None
+    
+    @property
+    def db(self):
+        """Получение сессии БД (создается при необходимости)"""
+        if self._db is None:
+            self._db = SessionLocal()
+        return self._db
     
     def create_ticket(
         self,
@@ -60,9 +70,13 @@ class EscalationSystem:
             self.db.commit()
             self.db.refresh(ticket)
             
+            logger.info(f"Создан тикет #{ticket.id} для пользователя {user_id} ({user_name}), "
+                       f"категория: {category.value}, критичность: {criticality.value}")
+            
             return ticket
         except Exception as e:
             self.db.rollback()
+            logger.error(f"Ошибка создания тикета: {e}", exc_info=True)
             raise
     
     def get_tickets_by_line(self, support_line: SupportLine, status: TicketStatus = None) -> List[Ticket]:
@@ -102,7 +116,7 @@ class EscalationSystem:
             
             ticket.support_line = new_line
             ticket.status = TicketStatus.ESCALATED
-            ticket.updated_at = datetime.utcnow()
+            ticket.updated_at = datetime.now(timezone.utc)
             
             self.db.commit()
             self.db.refresh(ticket)
@@ -130,10 +144,10 @@ class EscalationSystem:
                 return None
             
             ticket.status = status
-            ticket.updated_at = datetime.utcnow()
+            ticket.updated_at = datetime.now(timezone.utc)
             
             if status == TicketStatus.RESOLVED:
-                ticket.resolved_at = datetime.utcnow()
+                ticket.resolved_at = datetime.now(timezone.utc)
             
             self.db.commit()
             self.db.refresh(ticket)
@@ -196,8 +210,13 @@ class EscalationSystem:
         
         return stats
     
+    def close(self):
+        """Закрытие сессии БД"""
+        if self._db is not None:
+            self._db.close()
+            self._db = None
+    
     def __del__(self):
         """Закрытие сессии при удалении"""
-        if hasattr(self, 'db'):
-            self.db.close()
+        self.close()
 
