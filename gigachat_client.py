@@ -100,47 +100,57 @@ class GigaChatClient:
     
     def classify_request(self, user_message: str, conversation_history: list = None) -> dict:
         """
-        Классификация обращения по категории и критичности
+        Классификация обращения по категории, критичности и определение новой темы
         
         Args:
             user_message: Сообщение пользователя
             conversation_history: История предыдущих сообщений
         
         Returns:
-            Словарь с category, criticality, support_line
+            Словарь с category, criticality, support_line, is_bank_related, is_new_topic
         """
         history_text = ""
-        if conversation_history:
+        has_history = conversation_history and len(conversation_history) > 0
+        if has_history:
             history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation_history[-5:]])
         
-        prompt = f"""Ты специалист по классификации обращений в службу поддержки БАНКА. 
-Проанализируй следующее обращение пользователя и определи:
-1. Категорию обращения (technical, billing, account, feature, bug, other)
-2. Критичность (low, medium, high, critical)
-3. Необходимую линию поддержки (line_1 - типовые вопросы, line_2 - технические, line_3 - сложные/критичные)
-4. Относится ли вопрос к банковской тематике (is_bank_related: true/false)
+        prompt = f"""Ты специалист поддержки СБЕРБАНКА. Проанализируй обращение пользователя.
 
-ВАЖНО: Вопрос должен относиться к банковской тематике:
-- Банковские услуги, счета, карты, переводы, кредиты, депозиты
-- Мобильное приложение банка, интернет-банк, банкоматы
-- Платежи, операции по счетам, выписки
-- Банковские продукты и услуги
+ОПРЕДЕЛИ:
+1. category (technical/billing/account/feature/bug/other)
+2. criticality (low/medium/high/critical)
+3. support_line (line_1 - простые, line_2 - технические, line_3 - сложные)
+4. is_bank_related (true/false) - относится ли к банковской тематике Сбербанка
+5. is_new_topic (true/false) - это НОВАЯ тема или продолжение предыдущего разговора
 
-Если вопрос НЕ относится к банковской тематике (например, ремонт техники, общие вопросы, другие услуги), установи is_bank_related = false.
+БАНКОВСКАЯ ТЕМАТИКА (is_bank_related = true):
+- Сбербанк Онлайн, СберБанк, карты, счета, переводы
+- Кредиты, вклады, ипотека, автоплатежи
+- Блокировка карты, восстановление доступа
+- Банкоматы, отделения, техподдержка банка
 
-История общения (если есть):
+НЕ БАНКОВСКАЯ ТЕМАТИКА (is_bank_related = false):
+- Общие вопросы, не связанные с банком
+- Другие сервисы, ремонт техники, доставка
+
+ОПРЕДЕЛЕНИЕ НОВОЙ ТЕМЫ (is_new_topic):
+- true: первое сообщение, новый вопрос, смена темы
+- false: уточнение, продолжение, "спасибо", "понятно"
+
+{"ИСТОРИЯ РАЗГОВОРА:" if has_history else "ЭТО ПЕРВОЕ СООБЩЕНИЕ (is_new_topic = true)"}
 {history_text}
 
-Текущее обращение:
+ТЕКУЩЕЕ СООБЩЕНИЕ:
 {user_message}
 
-Ответь ТОЛЬКО в формате JSON:
+Ответь ТОЛЬКО JSON:
 {{
-    "category": "категория",
-    "criticality": "критичность",
-    "support_line": "линия поддержки",
+    "category": "...",
+    "criticality": "...",
+    "support_line": "...",
     "is_bank_related": true/false,
-    "reasoning": "краткое обоснование"
+    "is_new_topic": {"true/false" if has_history else "true"},
+    "reasoning": "кратко"
 }}"""
 
         messages = [{"role": "user", "content": prompt}]
@@ -182,16 +192,23 @@ class GigaChatClient:
                 "line_3": SupportLine.LINE_3
             }
             
-            # Проверяем, относится ли вопрос к банковской тематике
-            is_bank_related = result.get("is_bank_related", True)  # По умолчанию true для обратной совместимости
-            if isinstance(is_bank_related, str):
-                is_bank_related = is_bank_related.lower() in ("true", "1", "yes", "да")
+            # Парсим булевы значения
+            def parse_bool(value, default=True):
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    return value.lower() in ("true", "1", "yes", "да")
+                return default
+            
+            is_bank_related = parse_bool(result.get("is_bank_related"), True)
+            is_new_topic = parse_bool(result.get("is_new_topic"), not has_history)
             
             return {
                 "category": category_map.get(result.get("category", "other").lower(), Category.OTHER),
                 "criticality": criticality_map.get(result.get("criticality", "low").lower(), Criticality.LOW),
                 "support_line": support_line_map.get(result.get("support_line", "line_1").lower(), SupportLine.LINE_1),
-                "is_bank_related": bool(is_bank_related),
+                "is_bank_related": is_bank_related,
+                "is_new_topic": is_new_topic,
                 "reasoning": result.get("reasoning", "")
             }
         except Exception as e:
@@ -201,8 +218,46 @@ class GigaChatClient:
                 "category": Category.OTHER,
                 "criticality": Criticality.LOW,
                 "support_line": SupportLine.LINE_1,
-                "is_bank_related": False,  # При ошибке считаем, что не относится к банку
+                "is_bank_related": False,
+                "is_new_topic": True,  # При ошибке считаем новой темой
                 "reasoning": f"Ошибка классификации: {str(e)}"
             }
+
+    def analyze_image_content(self, ocr_text: str) -> str:
+        """
+        Анализирует и очищает текст, полученный через OCR (распознавание текста с картинки).
+        Убирает технический мусор, выделяет суть ошибки или интерфейса.
+
+        Args:
+            ocr_text: Сырой текст после OCR
+
+        Returns:
+            str: Краткое описание того, что изображено на скриншоте
+        """
+        prompt = f"""Ты - аналитик скриншотов мобильного приложения Сбербанк Онлайн.
+Твоя задача: выделить суть из сырого текста распознавания (OCR) и убрать мусор.
+
+Сырой текст OCR:
+"{ocr_text}"
+
+ИНСТРУКЦИЯ:
+1. Игнорируй технические данные: время (12:00), заряд батареи (100%), названия операторов связи (MTS, Beeline).
+2. Найди текст ОШИБКИ, ПРЕДУПРЕЖДЕНИЯ или название экрана (например, "Вход в приложение", "Переводы").
+3. Сформулируй краткое описание (1-2 предложения) того, что видит пользователь.
+4. Если текст не содержит осмысленой информации или это просто набор символов, верни "Не удалось распознать содержимое экрана".
+
+Пример:
+Вход: "12:30 4G 50% Ошибка Сервис временно недоступен Повторите попытку позже OK"
+Выход: "Скриншот ошибки: Сервис временно недоступен. Предлагается повторить попытку позже."
+
+Твой ответ:"""
+        
+        messages = [{"role": "user", "content": prompt}]
+        
+        try:
+            response = self.generate_response(messages, temperature=0.2)
+            return response.strip()
+        except Exception as e:
+            return f"Ошибка анализа изображения: {str(e)}"
     
 

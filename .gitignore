@@ -51,3 +51,19 @@ chroma_db/
 .DS_Store
 Thumbs.db
 
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Audio/Voice files (temporary downloads from Telegram)
+*.ogg
+*.oga
+*.wav
+*.mp3
+voice_*.ogg
+
+# Images (temporary)
+photo_*.jpg
+*.jpeg.tmp

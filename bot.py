@@ -53,8 +53,10 @@ logging.getLogger("chromadb.telemetry.product").disabled = True
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb.telemetry.product.posthog").disabled = True
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+)
 from config import get_settings
 
 # Получаем настройки с валидацией
@@ -63,7 +65,9 @@ try:
 except ValueError as e:
     print(str(e))
     exit(1)
-from models import init_db, TicketStatus
+
+from database import init_db
+from models import Ticket, Category, Criticality, SupportLine, TicketStatus
 from gigachat_client import GigaChatClient
 from rag_system import RAGSystem
 from classifier import RequestClassifier
@@ -149,45 +153,64 @@ def add_to_conversation(user_id: int, role: str, content: str):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
+    """Обработчик команды /start и главное меню"""
     user = update.effective_user
-    welcome_message = f"""
-Привет, {user.first_name}! 👋
-
-Я интеллектуальный бот поддержки клиентов. Я могу:
-• Ответить на типовые вопросы
-• Помочь с техническими проблемами
-• Создать обращение в службу поддержки
-• Показать статус ваших обращений
-
-Доступные команды:
-/help - Список команд
-/my_tickets - Мои обращения
-/new_ticket - Создать новое обращение
-/clear - Очистить историю разговора
-"""
-    await update.message.reply_text(welcome_message)
     
     # Очищаем историю при новом старте
     user_id = user.id
     if user_id in user_conversations:
         user_conversations[user_id] = []
+        
+    welcome_text = (
+        f"Здравствуйте, {user.first_name}! 👋\n\n"
+        "Я интеллектуальный помощник поддержки. "
+        "Опишите вашу проблему текстом, и я помогу её решить или создам обращение."
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🗣️ Связаться с оператором", callback_data="contact_operator"),
+            InlineKeyboardButton("📋 Мои обращения", callback_data="my_tickets"),
+        ],
+        [
+             InlineKeyboardButton("❓ Помощь", callback_data="help"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        await update.callback_query.message.edit_text(welcome_text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /help"""
     help_text = """
-📋 Доступные команды:
+📋 <b>Справка</b>
 
-/start - Начать работу с ботом
-/help - Показать эту справку
-/my_tickets - Посмотреть все мои обращения
-/new_ticket - Создать новое обращение
-/clear - Очистить историю нашего разговора
+Я умею:
+• Отвечать на вопросы по услугам банка
+• Принимать жалобы и предложения
+• Показывать статус ваших обращений
 
-💬 Просто напишите мне ваш вопрос, и я постараюсь помочь!
+🔹 <b>Как пользоваться:</b>
+Просто напишите ваш вопрос в чат. Если это новая тема, я автоматически создам обращение.
+
+🔹 <b>Команды:</b>
+/start - Главное меню
+/my_tickets - Мои обращения
+/help - Эта справка
 """
-    await update.message.reply_text(help_text)
+    # Определяем, куда отвечать (на команду или на нажатие кнопки)
+    if update.callback_query and update.callback_query.message:
+        await update.callback_query.message.reply_text(help_text, parse_mode="HTML")
+    elif update.message:
+        await update.message.reply_text(help_text, parse_mode="HTML")
+    else:
+        # Fallback на случай, если сообщение не найдено (например, эффективное сообщение)
+        if update.effective_message:
+            await update.effective_message.reply_text(help_text, parse_mode="HTML")
 
 
 async def my_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -195,37 +218,41 @@ async def my_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tickets = escalation_system.get_user_tickets(user.id)
     
+    # Определяем сообщение для ответа
+    target_message = None
+    if update.callback_query and update.callback_query.message:
+        target_message = update.callback_query.message
+    elif update.message:
+        target_message = update.message
+    else:
+        target_message = update.effective_message
+
+    if not target_message:
+        logger.error("Не удалось определить сообщение для ответа в my_tickets")
+        return
+
     if not tickets:
-        await update.message.reply_text("У вас пока нет обращений.")
+        await target_message.reply_text("У вас пока нет активных обращений.")
         return
     
-    message = "📋 Ваши обращения:\n\n"
-    for ticket in tickets[:10]:  # Показываем последние 10
+    message = "📋 <b>Ваши обращения:</b>\n\n"
+    for ticket in tickets[:5]:  # Показываем последние 5 для компактности
         status_emoji = {
-            "open": "🟢",
-            "in_progress": "🟡",
-            "escalated": "🟠",
-            "resolved": "✅",
-            "closed": "⚫"
+            "open": "🟢", "in_progress": "🟡", "escalated": "🟠",
+            "resolved": "✅", "closed": "⚫"
         }
         
-        criticality_emoji = {
-            "low": "🟢",
-            "medium": "🟡",
-            "high": "🟠",
-            "critical": "🔴"
-        }
+        # Экранирование для HTML не требуется для обычного текста, если там нет < > &
+        # Но на всякий случай можно простым replace или html.escape
+        import html
+        title = html.escape(ticket.title)
         
-        emoji_status = status_emoji.get(ticket.status.value, "⚪")
-        emoji_crit = criticality_emoji.get(ticket.criticality.value, "⚪")
-        
-        message += f"{emoji_status} #{ticket.id} - {ticket.title}\n"
-        message += f"   Линия: {ticket.support_line.value} | "
-        message += f"Критичность: {emoji_crit} {ticket.criticality.value}\n"
-        message += f"   Статус: {ticket.status.value}\n"
-        message += f"   Создано: {ticket.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
+        message += f"{status_emoji.get(ticket.status.value, '⚪')} <b>#{ticket.id}</b>\n"
+        message += f"📝 {title}\n"
+        message += f"Раздел: {ticket.category.value}\n"
+        message += f"Статус: {ticket.status.value}\n\n"
     
-    await update.message.reply_text(message)
+    await target_message.reply_text(message, parse_mode="HTML")
 
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,7 +263,47 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_conversations:
         user_conversations[user_id] = []
     
-    await update.message.reply_text("История разговора очищена. Можем начать заново!")
+    if update.message:
+         await update.message.reply_text("🧹 История переписки очищена.")
+    elif update.effective_message:
+         await update.effective_message.reply_text("🧹 История переписки очищена.")
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатий на инлайн-кнопки"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user = update.effective_user
+    
+    if data == "help":
+        await help_command(update, context)
+        
+    elif data == "my_tickets":
+        await my_tickets(update, context)
+        
+    elif data == "contact_operator":
+        # Создаем тикет с эскалацией
+        try:
+            ticket = escalation_system.create_ticket(
+                title="Запрос оператора",
+                description="Пользователь запросил связь с оператором через меню",
+                user_id=user.id,
+                user_name=user.first_name,
+                category=Category.OTHER,
+                criticality=Criticality.MEDIUM,
+                support_line=SupportLine.LINE_1,
+                conversation_history=get_user_conversation(user.id)
+            )
+            await query.message.reply_text(
+                f"✅ <b>Обращение #{ticket.id} создано.</b>\n"
+                "Оператор подключится к диалогу в ближайшее время.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка создания тикета оператора: {e}")
+            await query.message.reply_text("Не удалось связаться с оператором. Попробуйте позже.")
 
 
 async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
@@ -252,142 +319,74 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     try:
-        # Проверяем, является ли сообщение приветствием
+        # 1. Проверяем приветствия
         user_message_lower = user_message.lower().strip()
-        greetings = [
-            "привет", "здравствуй", "здравствуйте", "добрый день", "добрый вечер",
-            "доброе утро", "доброй ночи", "приветствую", "салют", "хай", "hi", "hello",
-            "доброго времени суток", "доброго дня"
-        ]
-        is_greeting = any(user_message_lower.startswith(greeting) or user_message_lower == greeting 
-                          for greeting in greetings)
+        greetings = ["привет", "здравствуй", "добрый день", "добрый вечер", "доброе утро", "start", "начать"]
+        if any(user_message_lower.startswith(g) for g in greetings) and len(user_message) < 20:
+            if not update.callback_query: # Не показываем меню снова, если это callback
+                 await start(update, context)
+            return
+
+        # 2. Классификация и проверка тематики
+        classification = classifier.classify(user_message, conversation)
         
-        # Если это не приветствие, проверяем банковскую тематику
-        if not is_greeting:
-            classification_check = classifier.classify(user_message, conversation)
-            if not classification_check.get("is_bank_related", False):
-                await update.message.reply_text(
-                    "❌ Я могу помочь только с вопросами, связанными с банковскими услугами.\n\n"
-                    "Ваш вопрос не относится к банковской тематике. "
-                    "Я специализируюсь на вопросах, связанных с:\n"
-                    "• Банковскими услугами, счетами, картами\n"
-                    "• Переводами, кредитами, депозитами\n"
-                    "• Мобильным приложением банка, интернет-банком\n"
-                    "• Банкоматами, платежами и операциями по счетам\n\n"
-                    "Пожалуйста, задайте вопрос, связанный с банковскими услугами."
+        # Фильтрация не-Сбер вопросов
+        if not classification.get("is_bank_related", True):
+            await update.message.reply_text(
+                "❌ Я могу помочь только с вопросами Сбербанка.\n"
+                "(карты, вклады, приложение, переводы, кредиты)"
+            )
+            return
+
+        # 3. Автоматическое создание тикета (если новая тема)
+        # Проверяем, есть ли уже открытый тикет
+        # TODO: Добавить проверку открытых тикетов, пока просто создаем если is_new_topic
+        
+        if classification.get("is_new_topic", False):
+            # Создаем тикет "тихо" (без уведомления пользователя, или с минимальным)
+            try:
+                ticket = escalation_system.create_ticket(
+                    title=f"Авто-обращение: {user_message[:30]}...",
+                    description=user_message,
+                    user_id=user_id,
+                    user_name=user.first_name,
+                    category=classification["category"],
+                    criticality=classification["criticality"],
+                    support_line=classification["support_line"],
+                    conversation_history=conversation
                 )
-                return
-        
-        # 1. Пытаемся найти ответ в RAG базе знаний
+                logger.info(f"Создан авто-тикет #{ticket.id}")
+            except Exception as e:
+                logger.error(f"Ошибка создания авто-тикета: {e}")
+
+        # 4. RAG Поиск
         context_docs = rag.get_context_for_query(user_message, max_results=3)
         
-        # 2. Формируем промпт для ответа с учетом контекста
-        system_prompt = """Ты - вежливый и профессиональный помощник службы поддержки банка. 
-Отвечай на вопросы пользователей на основе предоставленной информации из базы знаний.
-Если информации недостаточно или вопрос требует создания обращения, сообщи об этом.
-Отвечай кратко и по делу, на русском языке."""
-        
-        # Формируем сообщения для GigaChat
-        messages = [
-            {"role": "system", "content": system_prompt}
-        ]
-        
-        if context_docs and context_docs != "Релевантная информация не найдена.":
-            context_message = f"""Контекст из базы знаний:
-{context_docs}
+        # 5. Генерация ответа
+        system_prompt = f"""Ты - помощник службы поддержки Сбербанка.
+Твоя задача: вежливо помочь клиенту.
+Контекст из базы знаний:
+{context_docs if context_docs else "Нет информации"}
 
-Вопрос пользователя: {user_message}"""
-            messages.append({"role": "user", "content": context_message})
-        else:
-            messages.append({"role": "user", "content": user_message})
+Отвечай кратко, вежливо и по сути вопроса."""
         
-        # 3. Генерируем ответ
-        bot_response = gigachat.generate_response(messages, temperature=0.7)
+        messages = [{"role": "system", "content": system_prompt}]
         
-        # 4. Проверяем, нужно ли создавать обращение
-        # (если пользователь явно просит помощь или RAG не нашел ответ)
-        # Приветствия не создают тикеты
-        should_create_ticket = (
-            not is_greeting and (
-                "обращение" in user_message.lower() or
-                "заявка" in user_message.lower() or
-                "тикет" in user_message.lower() or
-                context_docs == "Релевантная информация не найдена." or
-                "не знаю" in bot_response.lower() or
-                "не могу" in bot_response.lower()
-            )
-        )
+        # Добавляем последние сообщения для контекста
+        for msg in conversation[-3:]: 
+            messages.append(msg)
+            
+        ai_response = gigachat.generate_response(messages)
         
-        # Отправляем ответ пользователю
-        await update.message.reply_text(bot_response)
+        # Добавляем ответ бота в историю
+        add_to_conversation(user_id, "assistant", ai_response)
         
-        # Добавляем ответ в историю
-        add_to_conversation(user_id, "assistant", bot_response)
-        
-        # 5. Если нужно, классифицируем и создаем обращение
-        if should_create_ticket:
-            await context.bot.send_chat_action(
-                chat_id=update.effective_chat.id,
-                action="typing"
-            )
-            
-            # Классификация обращения
-            classification = classifier.classify(user_message, conversation)
-            
-            # Проверяем банковскую тематику перед созданием тикета
-            if not classification.get("is_bank_related", False):
-                await update.message.reply_text(
-                    "❌ Не удалось создать обращение.\n\n"
-                    "Ваш вопрос не относится к банковской тематике. "
-                    "Я могу помочь только с вопросами, связанными с банковскими услугами, "
-                    "счетами, картами, переводами, кредитами и другими банковскими операциями.\n\n"
-                    "Пожалуйста, уточните ваш вопрос, если он связан с банком."
-                )
-                return
-            
-            # Блокируем создание тикета, если категория "other" (нет конкретной тематики)
-            from models import Category
-            if classification["category"] == Category.OTHER:
-                await update.message.reply_text(
-                    "❌ Не удалось создать обращение.\n\n"
-                    "Ваш вопрос не содержит конкретной тематики. "
-                    "Пожалуйста, уточните ваш вопрос или опишите проблему более детально, "
-                    "чтобы мы могли вам помочь."
-                )
-                return
-            
-            # Создаем тикет
-            ticket = escalation_system.create_ticket(
-                title=user_message[:100] if len(user_message) > 100 else user_message,
-                description=user_message,
-                user_id=user_id,
-                user_name=user.full_name or user.username or "Unknown",
-                category=classification["category"],
-                criticality=classification["criticality"],
-                support_line=classification["support_line"],
-                conversation_history=conversation
-            )
-            
-            # Уведомление о создании обращения
-            ticket_message = f"""
-✅ Обращение создано!
+        await update.message.reply_text(ai_response)
 
-📋 Номер: #{ticket.id}
-📂 Категория: {ticket.category.value}
-⚠️ Критичность: {ticket.criticality.value}
-📞 Линия поддержки: {ticket.support_line.value}
-📝 Статус: {ticket.status.value}
 
-Ваше обращение передано в соответствующую линию поддержки. Мы свяжемся с вами в ближайшее время.
-"""
-            await update.message.reply_text(ticket_message)
-        
     except Exception as e:
-        logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Извините, произошла ошибка при обработке вашего запроса. "
-            "Попробуйте позже или используйте команду /help."
-        )
+        logger.error(f"Ошибка обработки сообщения: {e}", exc_info=True)
+        await update.message.reply_text("Произошла техническая ошибка. Попробуйте позже.")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -443,7 +442,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Убираем сообщение о распознавании и сразу обрабатываем текст
             await status_msg.delete()
-            await process_user_text(update, context, text)
+            
+            final_message = f"Пользователь прислал голосовое сообщение.\n[ТРАНСКРИПЦИЯ]: {text}"
+            await process_user_text(update, context, final_message)
 
     except RuntimeError as e:
         # Ошибка с credentials
@@ -527,10 +528,27 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # Убираем сообщение о распознавании и сразу обрабатываем текст
-            # НЕ показываем распознанный текст пользователю, только обрабатываем
+            # Анализируем содержимое с помощью GigaChat (чистим OCR)
+            await status_msg.edit_text("🧠 Анализирую содержимое изображения...")
+            # Запускаем в executor, так как это синхронный вызов сети
+            loop = asyncio.get_running_loop()
+            clean_content = await loop.run_in_executor(
+                None, lambda: gigachat.analyze_image_content(ocr_text)
+            )
+            
+            # Формируем итоговое сообщение с учетом подписи (caption)
+            caption = message.caption or ""
+            
+            # Структурированное сообщение для классификатора и оператора
+            final_message = (
+                f"Пользователь прислал скриншот/изображение.\n"
+                f"[АНАЛИЗ ИЗОБРАЖЕНИЯ]: {clean_content}\n"
+                f"[ТЕКСТ ПОДПИСИ]: {caption if caption else 'без подписи'}"
+            )
+
+            # Убираем сообщение о статусе и обрабатываем
             await status_msg.delete()
-            await process_user_text(update, context, ocr_text)
+            await process_user_text(update, context, final_message)
 
     except pytesseract.TesseractNotFoundError:
         await status_msg.edit_text(
@@ -571,6 +589,9 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("my_tickets", my_tickets))
     application.add_handler(CommandHandler("clear", clear_history))
+    
+    # Обработчик кнопок меню
+    application.add_handler(CallbackQueryHandler(button_handler))
     
     # Регистрируем обработчики для операторов
     async def tickets_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
