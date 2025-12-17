@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Dict, List
 from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import Conflict
@@ -86,27 +87,41 @@ class SupportBot:
         
         # Обработка текстовых сообщений
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-    
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /start"""
+        """Обработка команды /start с кнопками"""
         user = update.effective_user
         name = self.escape_md(user.first_name)
+    
         welcome_message = (
             f"О, здравствуйте, {name}!\n\n"
             "Я — *бот поддержки банка*. Готов помочь вам с вопросами.\n\n"
-            "*Я могу:*\n"
-            "• ответить на вопросы про интернет‑банк и карты;\n"
-            "• помочь восстановить доступ;\n"
-            "• создать обращение для специалистов.\n\n"
-            "Пожалуйста, опишите вашу проблему или задайте вопрос.\n\n"
-            "*Команды:*\n"
-            "/help — справка\n"
-            "/clear — очистить историю диалога"
+            "Выберите, с чем вам нужна помощь:"
         )
-        
-        await update.message.reply_text(welcome_message, parse_mode=ParseMode.MARKDOWN_V2)
-        self.conversation_history[user.id] = []
     
+        keyboard = [
+            [
+                InlineKeyboardButton("❓ Частые вопросы", callback_data="faq"),
+                InlineKeyboardButton("🔐 Восстановить доступ", callback_data="access")
+            ],
+            [
+                InlineKeyboardButton("💳 Управление картой", callback_data="card"),
+                InlineKeyboardButton("📱 Мобильное приложение", callback_data="app")
+            ],
+            [
+                InlineKeyboardButton("📩 Отправить обращение", callback_data="ticket"),
+                InlineKeyboardButton("ℹ️ Справка", callback_data="help")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+    
+        await update.message.reply_text(
+            welcome_message,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=reply_markup
+        )
+        self.conversation_history[user.id] = []
+        
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /help"""
         help_message = (
@@ -154,8 +169,49 @@ class SupportBot:
         return str(chat_id) == str(self.support_chat_id)
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка нажатий на inline кнопки"""
-        await self.support_notifier.handle_ticket_callback(update, context)
+        """Обработка нажатий на inline-кнопки"""
+        query = update.callback_query
+        await query.answer()
+    
+        data = query.data
+    
+        # Обработка системных кнопок (тикетов) — как раньше
+        if data.startswith("ticket_"):
+            await self.support_notifier.handle_ticket_callback(update, context)
+            return
+    
+        # Обработка пользовательских быстрых кнопок
+        user = update.effective_user
+        chat_id = update.effective_chat.id
+    
+        predefined_questions = {
+            "faq": "Какие часто задаваемые вопросы?",
+            "access": "Не могу войти в интернет-банк",
+            "card": "Как заблокировать карту?",
+            "app": "Не работает мобильное приложение",
+            "ticket": "Хочу отправить обращение в поддержку",
+            "help": "/help",
+        }
+    
+        if data in predefined_questions:
+            fake_message = predefined_questions[data]
+            if data == "help":
+                await self.help_command(update, context)
+            else:
+                # Эмулируем отправку текстового сообщения от пользователя
+                # Создаём фейковый объект сообщения
+                from types import SimpleNamespace
+                fake_update = SimpleNamespace()
+                fake_update.effective_user = user
+                fake_update.effective_chat = SimpleNamespace(id=chat_id)
+                fake_update.message = SimpleNamespace(text=fake_message)
+    
+                await self.handle_message(fake_update, context)
+    
+            # Удаляем клавиатуру после нажатия
+            await query.edit_message_reply_markup(reply_markup=None)
+        else:
+            await query.edit_message_text("Неизвестное действие.")
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка текстовых сообщений"""
