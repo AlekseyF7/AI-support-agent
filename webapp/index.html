@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sber Support - Платиновый Навигатор</title>
+    <!-- 2GIS SDK -->
+    <script src="https://maps.api.2gis.ru/2.0/loader.js?pkg=full"></script>
+    <!-- Telegram WebApp SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --sber-green: #21a038;
+            --sber-gradient: linear-gradient(135deg, #21a038 0%, #007a33 100%);
+            --sber-light-green: #e8f5e9;
+            --bg-color: var(--tg-theme-bg-color, #ffffff);
+            --text-color: var(--tg-theme-text-color, #000000);
+            --secondary-bg: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            --hint-color: var(--tg-theme-hint-color, #707579);
+            --accent-green: #107c10;
+        }
+
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Floating Controls */
+        .controls {
+            position: absolute;
+            top: 20px;
+            right: 15px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .control-btn {
+            width: 48px;
+            height: 48px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.12);
+            border: 1px solid rgba(0, 0, 0, 0.05);
+            cursor: pointer;
+            font-size: 22px;
+            transition: transform 0.2s;
+        }
+
+        .control-btn:active {
+            transform: scale(0.9);
+        }
+
+        /* Bottom Sheet Panel */
+        .bottom-panel {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: var(--bg-color);
+            border-radius: 28px 28px 0 0;
+            padding: 24px 24px 40px 24px;
+            box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.15);
+            transform: translateY(100%);
+            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            border-top: 1px solid rgba(0, 0, 0, 0.05);
+        }
+
+        .bottom-panel.active {
+            transform: translateY(0);
+        }
+
+        .handle {
+            width: 40px;
+            height: 5px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            margin: -8px auto 20px auto;
+        }
+
+        .branch-info h3 {
+            margin: 0;
+            font-size: 22px;
+            font-weight: 800;
+            color: var(--sber-green);
+        }
+
+        .branch-info p {
+            margin: 6px 0;
+            font-size: 15px;
+            color: var(--hint-color);
+            font-weight: 500;
+        }
+
+        .route-stats {
+            display: flex;
+            gap: 15px;
+            margin: 15px 0;
+            padding: 12px;
+            background: var(--sber-light-green);
+            border-radius: 14px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--accent-green);
+        }
+
+        .actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 16px;
+            border-radius: 16px;
+            font-weight: 700;
+            font-size: 16px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: opacity 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--sber-gradient);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: var(--secondary-bg);
+            color: var(--text-color);
+        }
+
+        .btn:active {
+            opacity: 0.8;
+        }
+
+        /* Loader Overlay */
+        #loader {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--bg-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid var(--secondary-bg);
+            border-top: 5px solid var(--sber-green);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            box-shadow: 0 0 15px rgba(33, 160, 56, 0.2);
+        }
+
+        @keyframes spin {
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .dark-theme .control-btn {
+            background: #1c1c1e;
+            color: white;
+            border-color: #38383a;
+        }
+
+        .dark-theme .handle {
+            background: #3a3a3c;
+        }
+
+        .dark-theme .route-stats {
+            background: #1b2e1b;
+            color: #4ade80;
+        }
+
+        .dark-theme .btn-secondary {
+            background: #2c2c2e;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loader">
+        <div class="spinner"></div>
+        <p style="margin-top: 20px; font-weight: 600; font-size: 16px;">💎 Platinum Sber Maps</p>
+    </div>
+
+    <div class="controls">
+        <div class="control-btn" id="btn-geo">📍</div>
+        <div class="control-btn" id="btn-refresh">🔄</div>
+    </div>
+
+    <div id="map"></div>
+
+    <div id="info-panel" class="bottom-panel">
+        <div class="handle"></div>
+        <div class="branch-info">
+            <h3 id="branch-name">Загрузка...</h3>
+            <p id="branch-address">Поиск ближайшего отделения</p>
+            <div class="route-stats" id="route-stats" style="display: none;">
+                <span id="route-time">⏱ -- мин</span>
+                <span id="route-dist">📏 -- км</span>
+            </div>
+            <p id="branch-meta" style="font-size: 13px;"></p>
+        </div>
+        <div class="actions">
+            <button class="btn btn-primary" id="btn-navigate">🚀 В Навигатор</button>
+            <button class="btn btn-secondary" id="btn-close">Закрыть</button>
+        </div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        if (tg.colorScheme === 'dark') document.body.classList.add('dark-theme');
+
+        let map, userPos, markers = [], polyline;
+
+        DG.then(() => {
+            map = DG.map('map', {
+                center: [55.7558, 37.6173], zoom: 14,
+                zoomControl: false, fullscreenControl: false
+            });
+
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(pos => {
+                    userPos = [pos.coords.latitude, pos.coords.longitude];
+                    bootstrap(userPos);
+                }, () => showError("Ошибка GPS"));
+            } else {
+                showError("GPS не поддерживается");
+            }
+        });
+
+        async function bootstrap(coords) {
+            DG.marker(coords, {
+                icon: DG.icon({
+                    iconUrl: 'https://cdn-icons-png.flaticon.com/512/8112/8112678.png', // Platinum User Icon
+                    iconSize: [40, 40]
+                })
+            }).addTo(map).bindPopup('<b>Вы находитесь здесь</b>');
+
+            map.setView(coords, 14);
+
+            try {
+                const res = await fetch(`/api/branches?lat=${coords[0]}&lon=${coords[1]}&radius=5000`);
+                const branches = await res.json();
+
+                if (branches.length > 0) {
+                    processBranches(branches);
+                    // Автоматически строим маршрут к самому первому (ближайшему)
+                    autoSelectClosest(branches[0]);
+                } else {
+                    showError("Рядом нет отделений");
+                }
+                hideLoader();
+            } catch (e) {
+                showError("Ошибка сервера");
+            }
+        }
+
+        function processBranches(branches) {
+            branches.forEach(b => {
+                const marker = DG.marker([b.lat, b.lon]).addTo(map);
+                marker.on('click', () => showDetails(b));
+                markers.push(marker);
+            });
+        }
+
+        function autoSelectClosest(branch) {
+            setTimeout(() => showDetails(branch), 800);
+        }
+
+        async function showDetails(branch) {
+            document.getElementById('branch-name').innerText = branch.name;
+            document.getElementById('branch-address').innerText = branch.address;
+            document.getElementById('branch-meta').innerText = `🕒 ${branch.schedule || '09:00 - 20:00'}`;
+
+            const panel = document.getElementById('info-panel');
+            panel.classList.add('active');
+
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+
+            // Рисуем линию маршрута (прямая для визуализации, в 2.0 SDK сложный роутинг требует плагина)
+            drawMockRoute(userPos, [branch.lat, branch.lon]);
+
+            // Расчет примерного времени (пешком)
+            const dist = getDistance(userPos, [branch.lat, branch.lon]);
+            const time = Math.round((dist / 5) * 60); // 5 км/ч
+
+            document.getElementById('route-stats').style.display = 'flex';
+            document.getElementById('route-time').innerText = `⏱ ${time} мин`;
+            document.getElementById('route-dist').innerText = `📏 ${dist.toFixed(1)} км`;
+
+            document.getElementById('btn-navigate').onclick = () => {
+                const url = `https://2gis.ru/routeSearch/rsType/pedestrian/from/${userPos[1]},${userPos[0]}/to/${branch.lon},${branch.lat}`;
+                tg.openLink(url);
+            };
+        }
+
+        function drawMockRoute(from, to) {
+            if (polyline) polyline.remove();
+            polyline = DG.polyline([from, to], { color: '#21a038', weight: 5, opacity: 0.6 }).addTo(map);
+            map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
+        }
+
+        function getDistance(p1, p2) {
+            const rad = x => x * Math.PI / 180;
+            const R = 6378.137;
+            const dLat = rad(p2[0] - p1[0]);
+            const dLon = rad(p2[1] - p1[1]);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(rad(p1[0])) * Math.cos(rad(p2[0])) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        document.getElementById('btn-geo').onclick = () => userPos && map.panTo(userPos);
+        document.getElementById('btn-refresh').onclick = () => location.reload();
+        document.getElementById('btn-close').onclick = () => {
+            document.getElementById('info-panel').classList.remove('active');
+            if (polyline) polyline.remove();
+        };
+
+        function hideLoader() {
+            const l = document.getElementById('loader');
+            l.style.opacity = '0';
+            setTimeout(() => l.style.display = 'none', 500);
+        }
+
+        function showError(msg) {
+            document.getElementById('loader').innerHTML = `<p style="padding:20px; font-weight:700;">❌ ${msg}</p>`;
+        }
+
+        map.on('click', () => {
+            document.getElementById('info-panel').classList.remove('active');
+            if (polyline) polyline.remove();
+        });
+    </script>
+</body>
+
+</html>

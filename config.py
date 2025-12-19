@@ -1,87 +1,90 @@
-"""Конфигурация приложения"""
-from pydantic_settings import BaseSettings
-from typing import Optional
-import os
+"""Конфигурация приложения с поддержкой UTF-8 и асинхронности."""
 import sys
 import io
+import logging
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Настройка кодировки для Windows
-if sys.platform == 'win32':
-    # Переопределяем stdout и stderr для UTF-8
+# Настройка кодировки для Windows (только если не запущены тесты)
+if sys.platform == 'win32' and "pytest" not in sys.modules:
     if hasattr(sys.stdout, 'buffer'):
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        try:
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        except Exception:
+            pass
     if hasattr(sys.stderr, 'buffer'):
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-    # Устанавливаем кодовую страницу консоли в UTF-8
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        kernel32.SetConsoleOutputCP(65001)  # UTF-8
-        kernel32.SetConsoleCP(65001)  # UTF-8
-    except:
-        pass
-
+        try:
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        except Exception:
+            pass
 
 class Settings(BaseSettings):
     # Giga Chat API
     GIGACHAT_CLIENT_ID: str = ""
     GIGACHAT_CLIENT_SECRET: str = ""
-    GIGACHAT_AUTHORIZATION_KEY: str = ""  # Готовый Authorization Key (base64), имеет приоритет над client_id:client_secret
-    GIGACHAT_SCOPE: str = "GIGACHAT_API_PERS"  # Стандартные значения: GIGACHAT_API_PERS, GIGACHAT_API_B2B, GIGACHAT_API_CORP
-    GIGACHAT_WORKSPACE_ID: str = ""  # ID пространства (не используется для получения токена)
+    GIGACHAT_AUTHORIZATION_KEY: str = ""
+    GIGACHAT_SCOPE: str = "GIGACHAT_API_PERS"
     
     # Telegram Bot
     TELEGRAM_BOT_TOKEN: str = ""
     
-    # Sber Salute Speech (SmartSpeech) for STT
+    # Sber Salute Speech
     SALUTE_SPEECH_CLIENT_ID: str = ""
     SALUTE_SPEECH_CLIENT_SECRET: str = ""
     
-    # Database
-    DATABASE_URL: str = "sqlite:///./support.db"
+    # 2GIS API
+    DG_API_KEY: str = ""
     
-    # RAG Settings
+    # WebApp
+    WEBAPP_URL: str = "http://localhost:8000"
+    
+    # Database & RAG
+    DATABASE_URL: str = "sqlite+aiosqlite:///./support.db"
     CHROMA_DB_PATH: str = "./chroma_db"
-    # Используем более надежную модель по умолчанию
-    EMBEDDING_MODEL: str = "paraphrase-multilingual-mpnet-base-v2"
+    EMBEDDING_MODEL_NAME: str = "ai-sage/Giga-Embeddings-instruct"
     
-    # Operator Settings
-    OPERATOR_IDS: str = ""  # Список ID операторов через запятую (например: "123456789,987654321")
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-    
-    def validate_settings(self):
-        """Проверка обязательных настроек"""
-        errors = []
-        if not self.GIGACHAT_CLIENT_ID or self.GIGACHAT_CLIENT_ID == "your_client_id_here":
-            errors.append("GIGACHAT_CLIENT_ID не установлен")
-        if not self.GIGACHAT_CLIENT_SECRET or self.GIGACHAT_CLIENT_SECRET == "your_client_secret_here":
-            errors.append("GIGACHAT_CLIENT_SECRET не установлен")
-        if not self.TELEGRAM_BOT_TOKEN or self.TELEGRAM_BOT_TOKEN == "your_telegram_bot_token_here":
-            errors.append("TELEGRAM_BOT_TOKEN не установлен")
-        
-        if errors:
-            error_msg = "\n".join([f"❌ {e}" for e in errors])
-            print("=" * 60)
-            print("ОШИБКА КОНФИГУРАЦИИ")
-            print("=" * 60)
-            print(error_msg)
-            print("\nДля создания файла .env выполните:")
-            print("  python create_env.py")
-            print("\nЗатем заполните переменные в файле .env:")
-            print("1. GIGACHAT_CLIENT_ID - получите на https://developers.sber.ru/gigachat")
-            print("2. GIGACHAT_CLIENT_SECRET - получите на https://developers.sber.ru/gigachat")
-            print("3. TELEGRAM_BOT_TOKEN - получите у @BotFather в Telegram")
-            print("=" * 60)
-            raise ValueError("Не все обязательные настройки заполнены")
+    # Adaptive Intelligence (Autopilot)
+    TARGET_SUCCESS_RATE: float = 0.80  # Целевой % автоматизации (80%)
+    MIN_CONFIDENCE_THRESHOLD: int = 50 # Минимальный порог (смелый)
+    MAX_CONFIDENCE_THRESHOLD: int = 90 # Максимальный порог (строгий)
+    AI_CONFIDENCE_THRESHOLD: int = 70  # Стартовое значение
 
+    # Shadow Hunter (Scraping)
+    KNOWLEDGE_HUNT_INTERVAL: int = 24  # Интервал авто-парсинга в часах (0 - выключено)
+
+    # Operators
+    OPERATOR_IDS: str = ""
+
+    @property
+    def operator_list(self) -> list[int]:
+        """Преобразование строки ID в список целых чисел."""
+        if not self.OPERATOR_IDS:
+            return []
+        return [int(oid.strip()) for oid in self.OPERATOR_IDS.split(',') if oid.strip().isdigit()]
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+
+    def validate_settings(self):
+        """Проверка минимально необходимых настроек."""
+        missing = []
+        if not self.TELEGRAM_BOT_TOKEN:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not (self.GIGACHAT_AUTHORIZATION_KEY or (self.GIGACHAT_CLIENT_ID and self.GIGACHAT_CLIENT_SECRET)):
+            missing.append("GigaChat Credentials (ID/Secret or Auth Key)")
+            
+        # ПРОВЕРКА NGROK (Критично для Mini App)
+        import os
+        if not os.getenv("NGROK_AUTHTOKEN"):
+            print("⚠️ ВНИМАНИЕ: NGROK_AUTHTOKEN не установлен в .env! Интерактивная карта (Mini App) не будет работать в Telegram.")
+            
+        if missing:
+            print("❌ ОШИБКА КОНФИГУРАЦИИ")
+            print(f"Отсутствуют: {', '.join(missing)}")
+            print("\nВыполните: python manage.py env init")
+            raise ValueError("Не все настройки заполнены")
 
 settings = Settings()
 
 def get_settings():
-    """Получение настроек с валидацией"""
     settings.validate_settings()
     return settings
-

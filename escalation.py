@@ -1,61 +1,124 @@
-"""Система маршрутизации и эскалации обращений"""
+""" 
+Система интеллектуальной маршрутизации и эскалации обращений.
+Реализует семантическое группирование похожих тикетов для снижения нагрузки на операторов.
+"""
 import logging
-from models import Ticket, SupportLine, TicketStatus, Criticality, SessionLocal
-from typing import Optional, List
-from datetime import datetime, timezone
 import json
+import asyncio
+from typing import Optional, List, Tuple, Dict, Any
+from datetime import datetime, timezone
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+
+from models import Ticket, SupportLine, TicketStatus, Criticality, Category, TicketResponse
 
 logger = logging.getLogger(__name__)
 
-
 class EscalationSystem:
-    """Система маршрутизации обращений по линиям поддержки"""
+    """
+    Бизнес-логика управления жизненным циклом обращений.
     
-    def __init__(self):
-        self._db = None
+    Attributes:
+        db (AsyncSession): Сессия SQLAlchemy.
+        chroma_client: Клиент векторной БД ChromaDB (опционально).
+        embedding_func: Функция для генерации эмбеддингов (опционально).
+    """
     
-    @property
-    def db(self):
-        """Получение сессии БД (создается при необходимости)"""
-        if self._db is None:
-            self._db = SessionLocal()
-        return self._db
-    
-    def create_ticket(
+    def __init__(self, db: AsyncSession, chroma_client=None, embedding_func=None):
+        self.db = db
+        self.chroma_client = chroma_client
+        self.embedding_func = embedding_func
+        self.collection = None
+        
+        if self.chroma_client and self.embedding_func:
+            try:
+                self.collection = self.chroma_client.get_or_create_collection(
+                    name="active_tickets_vectors",
+                    embedding_function=self.embedding_func
+                )
+            except Exception as e:
+                logger.error(f"❌ Критическая ошибка при инициализации ChromaDB коллекции: {e}")
+
+    async def find_similar_open_ticket(self, text: str, threshold: float = 0.4) -> Optional[Ticket]:
+        """
+        Ищет открытое обращение с похожим смыслом запроса.
+        
+        Args:
+            text: Текст нового запроса.
+            threshold: Порог схожести (L2-дистанция в ChromaDB). 0.0 - идентично.
+            
+        Returns:
+            Объект Ticket, если найдено совпадение, иначе None.
+        """
+        if not self.collection:
+            return None
+            
+        try:
+            loop = asyncio.get_running_loop()
+            # Модель ожидает префикс 'query: ' для оптимального поиска
+            query_text = f"query: {text}"
+            
+            results = await loop.run_in_executor(
+                None, 
+                lambda: self.collection.query(
+                    query_texts=[query_text], 
+                    n_results=1,
+                    where={"status": "open"} 
+                )
+            )
+            
+            if results['ids'] and results['ids'][0]:
+                distance = results['distances'][0][0]
+                if distance < threshold:
+                    ticket_id = int(results['ids'][0][0])
+                    logger.info(f"🔍 Семантическое совпадение: тикет #{ticket_id} (distance: {distance:.4f})")
+                    return await self.get_ticket_by_id(ticket_id)
+            
+            return None
+        except Exception as e:
+            logger.error(f"⚠️ Ошибка семантического поиска тикетов: {e}")
+            return None
+
+    async def create_ticket(
         self,
         title: str,
         description: str,
         user_id: int,
         user_name: str,
-        category,
-        criticality,
-        support_line,
-        conversation_history: list = None
-    ) -> Ticket:
+        category: Category,
+        criticality: Criticality,
+        support_line: SupportLine,
+        conversation_history: Optional[List[dict]] = None,
+        allow_grouping: bool = True
+    ) -> Tuple[Ticket, bool]:
         """
-        Создание нового обращения (тикета)
-        
-        Args:
-            title: Заголовок обращения
-            description: Описание проблемы
-            user_id: ID пользователя Telegram
-            user_name: Имя пользователя
-            category: Категория обращения
-            criticality: Критичность
-            support_line: Линия поддержки
-            conversation_history: История общения
+        Регистрирует новое обращение в системе. Выполняет дедупликацию запросов.
         
         Returns:
-            Созданный тикет
+            Tuple[Ticket, bool]: Объект тикета и флаг, является ли он новым (True/False).
         """
+        if allow_grouping:
+            similar_ticket = await self.find_similar_open_ticket(description)
+            if similar_ticket:
+                # Добавляем системный ответ-уведомление в существующий тикет
+                resp = TicketResponse(
+                    ticket_id=similar_ticket.id,
+                    operator_id=0,
+                    operator_name="System (Deduplication)",
+                    message=f"📢 Повторное обращение от пользователя {user_name} (ID: {user_id}).\n"
+                            f"Текст запроса синхронизирован: {description}"
+                )
+                self.db.add(resp)
+                similar_ticket.updated_at = datetime.now(timezone.utc)
+                await self.db.commit()
+                return similar_ticket, False
+
         try:
-            # Преобразуем историю в JSON строку
-            history_json = ""
-            if conversation_history:
-                history_json = json.dumps(conversation_history, ensure_ascii=False)
+            history_json = json.dumps(conversation_history or [], ensure_ascii=False)
             
             ticket = Ticket(
-                title=title,
+                title=title[:255],
                 description=description,
                 user_id=user_id,
                 user_name=user_name,
@@ -67,79 +130,35 @@ class EscalationSystem:
             )
             
             self.db.add(ticket)
-            self.db.commit()
-            self.db.refresh(ticket)
+            await self.db.commit()
+            await self.db.refresh(ticket)
             
-            logger.info(f"Создан тикет #{ticket.id} для пользователя {user_id} ({user_name}), "
-                       f"категория: {category.value}, критичность: {criticality.value}")
+            # Регистрация вектора в ChromaDB для будущего поиска
+            if self.collection:
+                loop = asyncio.get_running_loop()
+                # Для документов используем префикс 'passage: ' (опционально, зависит от конфига LocalEmbeddingFunction)
+                await loop.run_in_executor(
+                    None,
+                    lambda: self.collection.add(
+                        ids=[str(ticket.id)],
+                        documents=[description],
+                        metadatas=[{"status": "open", "user_id": user_id}]
+                    )
+                )
             
-            return ticket
+            logger.info("✅ Создан тикет #%s. Линия: %s, Приоритет: %s", 
+                        ticket.id, support_line.value, criticality.value)
+            return ticket, True
+            
         except Exception as e:
-            self.db.rollback()
-            logger.error(f"Ошибка создания тикета: {e}", exc_info=True)
+            await self.db.rollback()
+            logger.error(f"❌ Ошибка создания тикета: {e}")
             raise
-    
-    def get_tickets_by_line(self, support_line: SupportLine, status: TicketStatus = None) -> List[Ticket]:
-        """
-        Получение тикетов по линии поддержки
-        
-        Args:
-            support_line: Линия поддержки
-            status: Статус (опционально)
-        
-        Returns:
-            Список тикетов
-        """
-        query = self.db.query(Ticket).filter(Ticket.support_line == support_line)
-        
-        if status:
-            query = query.filter(Ticket.status == status)
-        
-        return query.order_by(Ticket.created_at.desc()).all()
-    
-    def escalate_ticket(self, ticket_id: int, new_line: SupportLine) -> Optional[Ticket]:
-        """
-        Эскалация тикета на другую линию поддержки
-        
-        Args:
-            ticket_id: ID тикета
-            new_line: Новая линия поддержки
-        
-        Returns:
-            Обновленный тикет или None
-        """
+
+    async def update_ticket_status(self, ticket_id: int, status: TicketStatus) -> Optional[Ticket]:
+        """Обновляет статус тикета и синхронизирует состояние в векторной БД."""
         try:
-            ticket = self.db.query(Ticket).filter(Ticket.id == ticket_id).first()
-            
-            if not ticket:
-                return None
-            
-            ticket.support_line = new_line
-            ticket.status = TicketStatus.ESCALATED
-            ticket.updated_at = datetime.now(timezone.utc)
-            
-            self.db.commit()
-            self.db.refresh(ticket)
-            
-            return ticket
-        except Exception as e:
-            self.db.rollback()
-            raise
-    
-    def update_ticket_status(self, ticket_id: int, status: TicketStatus) -> Optional[Ticket]:
-        """
-        Обновление статуса тикета
-        
-        Args:
-            ticket_id: ID тикета
-            status: Новый статус
-        
-        Returns:
-            Обновленный тикет или None
-        """
-        try:
-            ticket = self.db.query(Ticket).filter(Ticket.id == ticket_id).first()
-            
+            ticket = await self.get_ticket_by_id(ticket_id)
             if not ticket:
                 return None
             
@@ -149,74 +168,69 @@ class EscalationSystem:
             if status == TicketStatus.RESOLVED:
                 ticket.resolved_at = datetime.now(timezone.utc)
             
-            self.db.commit()
-            self.db.refresh(ticket)
+            await self.db.commit()
             
+            if self.collection:
+                loop = asyncio.get_running_loop()
+                if status in [TicketStatus.CLOSED, TicketStatus.RESOLVED]:
+                    # Удаляем из активной выборки для дедупликации
+                    await loop.run_in_executor(
+                        None, lambda: self.collection.delete(ids=[str(ticket_id)])
+                    )
+                else:
+                    await loop.run_in_executor(
+                        None, 
+                        lambda: self.collection.update(
+                            ids=[str(ticket_id)], 
+                            metadatas=[{"status": status.value, "user_id": ticket.user_id}]
+                        )
+                    )
+            
+            await self.db.refresh(ticket)
+            logger.info("🔄 Статус тикета #%s изменен на %s", ticket_id, status.value)
             return ticket
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
+            logger.error(f"❌ Ошибка обновления статуса тикета #%s: {e}", ticket_id)
             raise
+
+    async def get_tickets_by_line(self, support_line: SupportLine, status: TicketStatus = None) -> List[Ticket]:
+        """Получает список тикетов для конкретной линии поддержки."""
+        stmt = select(Ticket).where(Ticket.support_line == support_line)
+        if status:
+            stmt = stmt.where(Ticket.status == status)
+        
+        result = await self.db.execute(stmt.order_by(Ticket.created_at.desc()))
+        return list(result.scalars().all())
     
-    def get_user_tickets(self, user_id: int) -> List[Ticket]:
-        """
-        Получение всех тикетов пользователя
-        
-        Args:
-            user_id: ID пользователя
-        
-        Returns:
-            Список тикетов
-        """
-        return self.db.query(Ticket).filter(
-            Ticket.user_id == user_id
-        ).order_by(Ticket.created_at.desc()).all()
+    async def get_user_tickets(self, user_id: int) -> List[Ticket]:
+        """Получает все обращения конкретного пользователя."""
+        stmt = select(Ticket).where(Ticket.user_id == user_id).order_by(Ticket.created_at.desc())
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
     
-    def get_ticket_by_id(self, ticket_id: int) -> Optional[Ticket]:
-        """
-        Получение тикета по ID
-        
-        Args:
-            ticket_id: ID тикета
-        
-        Returns:
-            Тикет или None
-        """
-        return self.db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    async def get_ticket_by_id(self, ticket_id: int) -> Optional[Ticket]:
+        """Получает тикет по его первичному ключу."""
+        return await self.db.get(Ticket, ticket_id)
     
-    def get_queue_stats(self) -> dict:
-        """
-        Получение статистики очередей
-        
-        Returns:
-            Словарь со статистикой по линиям
-        """
+    async def get_queue_stats(self) -> Dict[str, Any]:
+        """Формирует статистику загруженности линий поддержки."""
         stats = {}
-        
         for line in SupportLine:
-            total = self.db.query(Ticket).filter(
-                Ticket.support_line == line,
+            total_stmt = select(func.count()).select_from(Ticket).where(
+                Ticket.support_line == line, 
                 Ticket.status != TicketStatus.CLOSED
-            ).count()
-            
-            open_count = self.db.query(Ticket).filter(
-                Ticket.support_line == line,
+            )
+            open_stmt = select(func.count()).select_from(Ticket).where(
+                Ticket.support_line == line, 
                 Ticket.status == TicketStatus.OPEN
-            ).count()
+            )
+            
+            total_count = (await self.db.execute(total_stmt)).scalar() or 0
+            open_count = (await self.db.execute(open_stmt)).scalar() or 0
             
             stats[line.value] = {
-                "total": total,
+                "total": total_count,
                 "open": open_count
             }
-        
         return stats
-    
-    def close(self):
-        """Закрытие сессии БД"""
-        if self._db is not None:
-            self._db.close()
-            self._db = None
-    
-    def __del__(self):
-        """Закрытие сессии при удалении"""
-        self.close()
-

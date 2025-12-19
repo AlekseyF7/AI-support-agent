@@ -1,110 +1,127 @@
-"""Модели данных для системы поддержки"""
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Enum
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timezone
+""" 
+Модели данных для системы поддержки Сбербанка.
+Использует асинхронный SQLAlchemy 2.0+ для работы с базой данных.
+"""
 import enum
+import logging
+from datetime import datetime, timezone
+from typing import AsyncGenerator, List, Optional
+
+from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, ForeignKey
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base, relationship
+
 from config import settings
 
+logger = logging.getLogger(__name__)
+
+# Базовый класс для моделей
 Base = declarative_base()
 
-
 class Criticality(enum.Enum):
-    """Уровни критичности обращения"""
-    LOW = "low"  # Низкая
-    MEDIUM = "medium"  # Средняя
-    HIGH = "high"  # Высокая
-    CRITICAL = "critical"  # Критическая
-
+    """Уровни критичности обращения для приоритезации в очереди."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
 
 class SupportLine(enum.Enum):
-    """Линии поддержки"""
-    LINE_1 = "line_1"  # Первая линия - типовые вопросы
-    LINE_2 = "line_2"  # Вторая линия - технические вопросы
-    LINE_3 = "line_3"  # Третья линия - сложные/критичные вопросы
-
+    """Линии поддержки: L1 (базовая), L2 (техническая), L3 (экспертная)."""
+    LINE_1 = "line_1"
+    LINE_2 = "line_2"
+    LINE_3 = "line_3"
 
 class TicketStatus(enum.Enum):
-    """Статусы заявки"""
-    OPEN = "open"  # Открыта
-    IN_PROGRESS = "in_progress"  # В работе
-    ESCALATED = "escalated"  # Эскалирована
-    RESOLVED = "resolved"  # Решена
-    CLOSED = "closed"  # Закрыта
-
+    """Жизненный цикл заявки."""
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    ESCALATED = "escalated"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
 
 class Category(enum.Enum):
-    """Категории обращений"""
-    TECHNICAL = "technical"  # Технические вопросы
-    BILLING = "billing"  # Вопросы по оплате
-    ACCOUNT = "account"  # Вопросы по аккаунту
-    FEATURE = "feature"  # Функциональность
-    BUG = "bug"  # Ошибки
-    OTHER = "other"  # Прочее
-
+    """Тематическая классификация обращения."""
+    TECHNICAL = "technical"
+    BILLING = "billing"
+    ACCOUNT = "account"
+    FEATURE = "feature"
+    BUG = "bug"
+    OTHER = "other"
 
 class Ticket(Base):
-    """Модель заявки (обращения)"""
+    """
+    Основная модель обращения (тикета).
+    Хранит информацию о пользователе, проблему, историю и текущий статус.
+    """
     __tablename__ = "tickets"
     
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String(255), nullable=False)
-    description = Column(Text, nullable=False)
-    user_id = Column(Integer, nullable=False)  # Telegram user ID
-    user_name = Column(String(255))
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    title = Column(String(255), nullable=False, doc="Заголовок тикета")
+    description = Column(Text, nullable=False, doc="Полное описание проблемы")
+    user_id = Column(Integer, nullable=False, index=True, doc="Telegram ID пользователя")
+    user_name = Column(String(255), nullable=True, doc="Имя пользователя в Telegram")
     
-    # Классификация
-    category = Column(Enum(Category), nullable=False)
-    criticality = Column(Enum(Criticality), nullable=False)
-    support_line = Column(Enum(SupportLine), nullable=False)
-    status = Column(Enum(TicketStatus), default=TicketStatus.OPEN)
+    category = Column(Enum(Category), nullable=False, index=True)
+    criticality = Column(Enum(Criticality), nullable=False, index=True)
+    support_line = Column(Enum(SupportLine), nullable=False, index=True)
+    status = Column(Enum(TicketStatus), default=TicketStatus.OPEN, index=True)
     
-    # Оператор
-    operator_id = Column(Integer, nullable=True)  # Telegram ID оператора, взявшего тикет
+    operator_id = Column(Integer, nullable=True, index=True, doc="ID оператора, взявшего тикет")
     operator_name = Column(String(255), nullable=True)
     
-    # Метаданные
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     resolved_at = Column(DateTime, nullable=True)
     
-    # История взаимодействий
-    conversation_history = Column(Text, default="")  # JSON строка с историей
+    conversation_history = Column(Text, default="", doc="JSON-дамп истории диалога с ИИ")
     
-    def __repr__(self):
-        return f"<Ticket(id={self.id}, title='{self.title}', line={self.support_line.value}, status={self.status.value})>"
-
+    def __repr__(self) -> str:
+        return f"<Ticket(id={self.id}, title='{self.title[:20]}...', status={self.status.value})>"
 
 class TicketResponse(Base):
-    """Модель ответа оператора на тикет"""
+    """
+    Модель ответа оператора или системы на обращение.
+    """
     __tablename__ = "ticket_responses"
     
-    id = Column(Integer, primary_key=True, index=True)
-    ticket_id = Column(Integer, nullable=False, index=True)
-    operator_id = Column(Integer, nullable=False)  # Telegram ID оператора
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)
+    operator_id = Column(Integer, nullable=False, doc="ID автора ответа (0 для системы)")
     operator_name = Column(String(255), nullable=True)
-    message = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
-    def __repr__(self):
-        return f"<TicketResponse(id={self.id}, ticket_id={self.ticket_id}, operator_id={self.operator_id})>"
+    message = Column(Text, nullable=False, doc="Текст ответа")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
+# Конфигурация движка базы данных
+DATABASE_URL = settings.DATABASE_URL
+if DATABASE_URL.startswith("sqlite:///"):
+    # Автоматическое переключение на асинхронный драйвер
+    DATABASE_URL = DATABASE_URL.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
 
-# Создание движка БД
-engine = create_engine(settings.DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# echo=True полезен для отладки, но для продакшена лучше False
+engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
 
+# Настройка фабрики сессий
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine, 
+    class_=AsyncSession, 
+    expire_on_commit=False,
+    autoflush=False
+)
 
-def init_db():
-    """Инициализация базы данных"""
-    Base.metadata.create_all(bind=engine)
+async def init_db():
+    """Инициализация таблиц базы данных."""
+    logger.info("🎬 Инициализация схем базы данных...")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("✅ База данных готова.")
 
-
-def get_db():
-    """Получение сессии БД"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Асинхронный генератор сессий для использования в хендлерах.
+    Обеспечивает автоматическое закрытие сессии после выполнения.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
