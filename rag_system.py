@@ -2,7 +2,6 @@
 Система RAG (Retrieval-Augmented Generation) на базе ChromaDB и локальной модели эмбеддингов.
 Обеспечивает поиск по базе знаний без затрат на API.
 """
-import os
 import logging
 import asyncio
 from typing import List, Optional, Any
@@ -36,12 +35,10 @@ class LocalEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, input: Documents) -> Embeddings:
         """
-        Метод для совместимости с ChromaDB API. 
-        Автоматически добавляет префикс 'passage: ' для индексируемых документов.
+        Метод для совместимости с ChromaDB API.
         """
-        # Модели instruct требуют префиксов: passage для документов, query для поиска
-        prefixed_texts = [f"passage: {t}" if not t.startswith("query:") else t for t in input]
-        embeddings = self.model.encode(prefixed_texts)
+        # Для rubert-tiny2 префиксы не нужны
+        embeddings = self.model.encode(input)
         return embeddings.tolist()
 
 class RAGSystem:
@@ -67,7 +64,7 @@ class RAGSystem:
             metadata={"hnsw:space": "l2"} # Используем L2 дистанцию
         )
 
-    async def get_context_for_query(self, query: str, max_results: int = 3, threshold: float = 0.85) -> str:
+    async def get_context_for_query(self, query: str, max_results: int = 3, threshold: float = 0.3) -> str:
         """
         Асинхронно ищет релевантную информацию по запросу.
         
@@ -85,11 +82,8 @@ class RAGSystem:
     def _get_context_sync(self, query: str, max_results: int, threshold: float) -> str:
         """Синхронная логика запроса к ChromaDB."""
         try:
-            # Для поиска используем префикс 'query: '
-            prefixed_query = f"query: {query}"
-            
             results = self.collection.query(
-                query_texts=[prefixed_query],
+                query_texts=[query],
                 n_results=max_results
             )
             

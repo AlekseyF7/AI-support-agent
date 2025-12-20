@@ -8,6 +8,8 @@ env/
 venv/
 ENV/
 myenv312/
+myenv/
+models/
 build/
 develop-eggs/
 dist/
@@ -29,13 +31,14 @@ wheels/
 .env
 .env.local
 
-# Database
+# Database (кроме ChromaDB)
 *.db
 *.sqlite
-*.sqlite3
+# *.sqlite3  # разрешаем для chroma_db
+support.db
 
-# ChromaDB
-chroma_db/
+# ChromaDB (сохраняем базу знаний в репозитории)
+# chroma_db/
 
 # IDE
 .vscode/

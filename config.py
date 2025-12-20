@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # Database & RAG
     DATABASE_URL: str = "sqlite+aiosqlite:///./support.db"
     CHROMA_DB_PATH: str = "./chroma_db"
-    EMBEDDING_MODEL_NAME: str = "ai-sage/Giga-Embeddings-instruct"
+    EMBEDDING_MODEL_NAME: str = "./models/rubert-tiny2"
     
     # Adaptive Intelligence (Autopilot)
     TARGET_SUCCESS_RATE: float = 0.80  # Целевой % автоматизации (80%)
